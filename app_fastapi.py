@@ -68,6 +68,8 @@ class MCPASGIApp:
     async def __call__(self, scope, receive, send):
         scope_type = scope.get("type")
         if scope_type == "http":
+            scope = dict(scope)
+            scope["headers"] = self._ensure_streamable_accept(scope.get("headers", []), scope.get("path", ""))
             await self._manager.handle_request(scope, receive, send)
             return
 
@@ -83,6 +85,38 @@ class MCPASGIApp:
             return
 
         raise RuntimeError(f"Unsupported ASGI scope type: {scope_type}")
+
+    @staticmethod
+    def _ensure_streamable_accept(headers, path: str):
+        """Ensure StreamableHTTP endpoints advertise JSON + SSE support."""
+        if not path.startswith("/mcp"):
+            return headers
+
+        header_list = list(headers)
+        accept_idx = -1
+        current_values: list[str] = []
+
+        for idx, (name, value) in enumerate(header_list):
+            if name.lower() == b"accept":
+                accept_idx = idx
+                current = value.decode("latin-1")
+                current_values = [item.strip() for item in current.split(",") if item.strip()]
+                break
+
+        required = ["application/json", "text/event-stream"]
+        for item in required:
+            if item not in current_values:
+                current_values.append(item)
+
+        new_accept = ", ".join(current_values) if current_values else ", ".join(required)
+        encoded = new_accept.encode("latin-1")
+
+        if accept_idx >= 0:
+            header_list[accept_idx] = (b"accept", encoded)
+        else:
+            header_list.append((b"accept", encoded))
+
+        return header_list
 
 
 @asynccontextmanager
