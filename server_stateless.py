@@ -78,7 +78,9 @@ if __name__ == "__main__":
         name=APP_NAME,
         stateless_http=True,  # 关键配置：支持ChatGPT和Claude
         host=host,
-        port=port
+        port=port,
+        # 添加会话配置以确保正确的响应头
+        debug=True  # 启用调试模式确保会话管理正常
     )
 
     @app.tool(
