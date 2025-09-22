@@ -3,9 +3,9 @@ import os, time, json
 from typing import Optional, List, Dict, Any
 
 import httpx
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
-from mcp.server import Server
+from mcp.server import FastMCP
 from mcp.types import TextContent
 
 # === Config ===
@@ -17,7 +17,7 @@ VALID_INTERVALS = {
     "1d","3d","1w","1M"
 }
 
-srv = Server(name=APP_NAME)
+app = FastMCP(name=APP_NAME)
 
 class KlineInput(BaseModel):
     symbol: str = Field(..., description="USDT-M perpetual symbol, e.g. 'BTCUSDT'")
@@ -26,7 +26,8 @@ class KlineInput(BaseModel):
     startTime: Optional[int] = Field(None, description="ms since epoch (UTC)")
     endTime: Optional[int] = Field(None, description="ms since epoch (UTC)")
 
-    @validator("interval")
+    @field_validator("interval")
+    @classmethod
     def _interval_ok(cls, v: str) -> str:
         if v not in VALID_INTERVALS:
             raise ValueError(f"interval must be one of {sorted(list(VALID_INTERVALS))}")
@@ -66,7 +67,7 @@ def fetch_klines(
         out.append(item)
     return out
 
-@srv.tool(
+@app.tool(
     "get_binance_klines",
     description="Fetch Binance USDT-M perpetual candlesticks via /fapi/v1/klines."
 )
@@ -103,16 +104,25 @@ def get_binance_klines(
 
 if __name__ == "__main__":
     # Railway 注入 PORT 环境变量；我们用 HTTP/SSE 模式对外暴露 /mcp。
-    port = int(os.getenv("PORT", "8000"))
+    port = int(os.getenv("PORT", "8002"))
     host = "0.0.0.0"
 
-    try:
-        # 大多数 mcp 版本提供 HTTP/SSE 传输；如果你的版本没有，请升级 mcp 包。
-        from mcp.server.http import SseServerTransport
-    except Exception as e:
-        raise SystemExit(
-            "Your 'mcp' package lacks HTTP/SSE transport. Try upgrading 'mcp'."
-        ) from e
+    # 重新创建 FastMCP 实例并配置端口
+    app = FastMCP(name=APP_NAME, host=host, port=port)
 
-    # 直接启动 HTTP/SSE 服务器（/mcp 为 MCP 端点）
-    srv.run(SseServerTransport(host=host, port=port))
+    # 重新注册工具（因为创建了新实例）
+    @app.tool(
+        "get_binance_klines",
+        description="Fetch Binance USDT-M perpetual candlesticks via /fapi/v1/klines."
+    )
+    def get_binance_klines_endpoint(
+        symbol: str,
+        interval: str,
+        limit: int = 500,
+        startTime: Optional[int] = None,
+        endTime: Optional[int] = None
+    ):
+        return get_binance_klines(symbol, interval, limit, startTime, endTime)
+
+    # FastMCP 自带 HTTP/SSE 支持，使用 streamable-http 传输
+    app.run(transport="streamable-http")
