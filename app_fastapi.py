@@ -56,7 +56,7 @@ async def call_tool(name: str, arguments: dict[str, Any] | None = None):
 # ---------------------------------------------------------------------------
 # FastAPI integration utilities
 # ---------------------------------------------------------------------------
-manager = StreamableHTTPSessionManager(app=server, json_response=False, stateless=False)
+manager = StreamableHTTPSessionManager(app=server, json_response=False, stateless=True)
 
 
 class MCPASGIApp:
