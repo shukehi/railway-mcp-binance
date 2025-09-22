@@ -111,5 +111,5 @@ if __name__ == "__main__":
         }
         return [TextContent(type="text", text=json.dumps({"summary": summary, "klines": data}, ensure_ascii=False))]
 
-    # 使用 FastMCP 的内置 streamable-http 传输
-    app.run(transport="streamable-http")
+    # 使用 SSE 传输模式，兼容ChatGPT和Claude客户端
+    app.run(transport="sse")
