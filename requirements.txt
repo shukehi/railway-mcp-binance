@@ -1,3 +1,5 @@
 mcp
 httpx
 pydantic
+fastapi
+uvicorn
