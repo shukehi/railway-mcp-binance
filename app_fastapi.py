@@ -1,5 +1,5 @@
 # app_fastapi.py - 最小可运行版本
-from app_fastapi import FastAPI
+from fastapi import FastAPI
 from mcp.server import Server
 from mcp.server.http import create_asgi_app
 from mcp.types import TextContent
