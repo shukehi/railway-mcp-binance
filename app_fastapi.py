@@ -1,16 +1,15 @@
-import os
 import json
 import time
+from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 
 import httpx
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from pydantic import BaseModel, Field, field_validator
 
 from mcp.server import Server
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import TextContent
-from mcp.server.streamable_http import StreamableHTTPServerTransport
-import asyncio
 
 # === Config ===
 APP_NAME = "binance-perp-kline"
@@ -71,6 +70,44 @@ def fetch_klines(
 
 # Create MCP server using standard Server class
 srv = Server(name=APP_NAME)
+
+# Session manager drives Streamable HTTP handshakes and stateful sessions
+session_manager = StreamableHTTPSessionManager(
+    app=srv,
+    json_response=False,
+    stateless=False,
+)
+
+
+class StreamableHTTPApp:
+    """Lightweight ASGI bridge that mounts the MCP session manager."""
+
+    def __init__(self, manager: StreamableHTTPSessionManager):
+        self._manager = manager
+
+    async def __call__(self, scope, receive, send):
+        scope_type = scope.get("type")
+        if scope_type == "http":
+            await self._manager.handle_request(scope, receive, send)
+            return
+
+        if scope_type == "lifespan":
+            while True:
+                message = await receive()
+                if message["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif message["type"] == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+        else:
+            raise RuntimeError(f"Unsupported ASGI scope type: {scope_type}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan hook that keeps the MCP session manager running."""
+    async with session_manager.run():
+        yield
 
 # Define tool function
 def tool_get_binance_klines(
@@ -139,7 +176,8 @@ async def handle_list_tools():
 # Create FastAPI app
 api = FastAPI(
     title="Binance MCP Server",
-    description="MCP server for Binance perpetual contract klines with proper session management"
+    description="MCP server for Binance perpetual contract klines with proper session management",
+    lifespan=lifespan,
 )
 
 # Health check endpoints
@@ -182,57 +220,7 @@ async def log_mcp_requests(request: Request, call_next):
 
     return response
 
-# Create streamable HTTP transport for MCP server
-transport = StreamableHTTPServerTransport(srv)
+api.mount("/mcp", StreamableHTTPApp(session_manager))
 
-@api.post("/mcp/{path:path}")
-async def mcp_handler(request: Request, path: str):
-    """Handle MCP requests with proper session management"""
-    # Get request body
-    body = await request.body()
-
-    # Create ASGI scope, receive, and send
-    scope = {
-        "type": "http",
-        "method": request.method,
-        "path": f"/mcp/{path}",
-        "query_string": str(request.url.query).encode(),
-        "headers": [(k.encode(), v.encode()) for k, v in request.headers.items()],
-    }
-
-    # Handle the request through streamable HTTP transport
-    response_data = []
-    response_headers = {}
-
-    async def receive():
-        return {
-            "type": "http.request",
-            "body": body,
-            "more_body": False,
-        }
-
-    async def send(message):
-        if message["type"] == "http.response.start":
-            response_headers.update({
-                k.decode(): v.decode() for k, v in message.get("headers", [])
-            })
-        elif message["type"] == "http.response.body":
-            response_data.append(message.get("body", b""))
-
-    # Process through transport
-    await transport(scope, receive, send)
-
-    # Build response
-    response_body = b"".join(response_data)
-
-    # Create FastAPI response with all headers
-    response = Response(
-        content=response_body,
-        headers=response_headers,
-        media_type=response_headers.get("content-type", "text/event-stream")
-    )
-
-    return response
-
-print(f"MCP server '{APP_NAME}' configured with StreamableHTTPServerTransport")
-print("Proper session management enabled")
+print(f"MCP server '{APP_NAME}' configured with StreamableHTTPSessionManager")
+print("Streamable HTTP endpoints mounted at /mcp")
