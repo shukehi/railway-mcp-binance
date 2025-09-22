@@ -178,6 +178,7 @@ api = FastAPI(
     title="Binance MCP Server",
     description="MCP server for Binance perpetual contract klines with proper session management",
     lifespan=lifespan,
+    redirect_slashes=False,
 )
 
 # Health check endpoints
