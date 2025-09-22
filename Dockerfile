@@ -7,9 +7,8 @@ WORKDIR /app
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY server.py /app/
-COPY server_fixed.py /app/
+COPY server_stateless.py /app/
 
 # Railway 会注入 PORT；我们绑定 0.0.0.0:$PORT
 ENV PORT=8000
-CMD ["/bin/sh","-c","python server_fixed.py"]
+CMD ["/bin/sh","-c","python server_stateless.py"]
