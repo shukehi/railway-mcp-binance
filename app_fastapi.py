@@ -14,6 +14,8 @@ from fastapi import FastAPI
 from mcp.server import Server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.server.session import ServerSession, InitializationState
+import mcp.types as mcp_types
 from mcp.types import TextContent, Tool
 
 # ---------------------------------------------------------------------------
@@ -410,3 +412,24 @@ api.mount("/mcp", MCPASGIApp(manager))
 async def healthz() -> dict[str, str]:
     """Simple health endpoint."""
     return {"status": "ok"}
+# ---------------------------------------------------------------------------
+# Compatibility patches
+# ---------------------------------------------------------------------------
+
+
+_original_received_request = ServerSession._received_request
+
+
+async def _received_request_with_auto_initialized(
+    self: ServerSession, responder
+) -> None:
+    await _original_received_request(self, responder)
+    if (
+        getattr(responder, "request", None)
+        and isinstance(responder.request.root, mcp_types.InitializeRequest)
+        and self._initialization_state == InitializationState.Initializing
+    ):
+        self._initialization_state = InitializationState.Initialized
+
+
+ServerSession._received_request = _received_request_with_auto_initialized
