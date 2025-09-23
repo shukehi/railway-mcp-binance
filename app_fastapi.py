@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List
 
@@ -252,19 +253,58 @@ async def fetch_binance_klines(
 # ---------------------------------------------------------------------------
 
 
-def _parse_csv_env(value: str | None) -> list[str]:
+def _parse_csv_env(value: str | None, *, normalize_host: bool = False) -> list[str]:
     if not value:
         return []
-    return [item.strip() for item in value.split(",") if item.strip()]
+    items: list[str] = []
+    for raw in value.split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        if normalize_host:
+            host = _normalize_host(item)
+            if host:
+                items.append(host)
+            continue
+        items.append(item)
+    return items
+
+
+def _normalize_host(value: str) -> str | None:
+    """Normalize host strings, stripping schemes or paths."""
+
+    if not value:
+        return None
+
+    value = value.strip()
+    if not value:
+        return None
+
+    if "://" in value:
+        parsed = urlparse(value)
+        host = parsed.netloc or parsed.path
+    else:
+        host = value
+
+    # Remove any trailing path fragments that may remain
+    host = host.split("/")[0].strip()
+    return host or None
 
 
 def _build_transport_security_settings() -> TransportSecuritySettings:
     """Create security settings for DNS rebinding protection."""
 
-    allowed_hosts = _parse_csv_env(os.getenv("MCP_ALLOWED_HOSTS"))
-    render_host = os.getenv("RENDER_EXTERNAL_HOSTNAME")
-    if render_host:
-        allowed_hosts.append(render_host.strip())
+    allowed_hosts = _parse_csv_env(os.getenv("MCP_ALLOWED_HOSTS"), normalize_host=True)
+
+    env_host_keys = (
+        "RENDER_EXTERNAL_HOSTNAME",
+        "RAILWAY_PUBLIC_DOMAIN",
+        "RAILWAY_STATIC_URL",
+    )
+    for key in env_host_keys:
+        host = _normalize_host(os.getenv(key, ""))
+        if host:
+            allowed_hosts.append(host)
 
     allowed_origins = _parse_csv_env(os.getenv("MCP_ALLOWED_ORIGINS"))
     if not allowed_origins:
