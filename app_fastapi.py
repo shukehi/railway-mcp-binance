@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List
 
@@ -11,6 +12,7 @@ from fastapi import FastAPI
 
 from mcp.server import Server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import TextContent, Tool
 
 # ---------------------------------------------------------------------------
@@ -248,7 +250,45 @@ async def fetch_binance_klines(
 # ---------------------------------------------------------------------------
 # FastAPI integration utilities
 # ---------------------------------------------------------------------------
-manager = StreamableHTTPSessionManager(app=server, json_response=False, stateless=True)
+
+
+def _parse_csv_env(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _build_transport_security_settings() -> TransportSecuritySettings:
+    """Create security settings for DNS rebinding protection."""
+
+    allowed_hosts = _parse_csv_env(os.getenv("MCP_ALLOWED_HOSTS"))
+    render_host = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+    if render_host:
+        allowed_hosts.append(render_host.strip())
+
+    allowed_origins = _parse_csv_env(os.getenv("MCP_ALLOWED_ORIGINS"))
+    if not allowed_origins:
+        allowed_origins = ["https://chatgpt.com", "https://chat.openai.com"]
+
+    # Ensure uniqueness while preserving deterministic order
+    deduped_hosts = list(dict.fromkeys(host for host in allowed_hosts if host))
+    deduped_origins = list(dict.fromkeys(origin for origin in allowed_origins if origin))
+
+    enable_protection = bool(deduped_hosts or deduped_origins)
+
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=enable_protection,
+        allowed_hosts=deduped_hosts,
+        allowed_origins=deduped_origins,
+    )
+
+
+manager = StreamableHTTPSessionManager(
+    app=server,
+    json_response=False,
+    stateless=False,
+    security_settings=_build_transport_security_settings(),
+)
 
 
 class MCPASGIApp:
