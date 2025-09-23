@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List
 
@@ -61,13 +60,6 @@ SEARCH_TOOL_NAMES = {"search", "search_action"}
 FETCH_TOOL_NAMES = {"fetch", "fetch_action"}
 DEFAULT_SEARCH_LIMIT = 5
 FETCH_BODY_LIMIT = 20000
-ALLOWED_FETCH_HOSTS = {
-    "binance.com",
-    "www.binance.com",
-    "api.binance.com",
-    "fapi.binance.com",
-    "data.binance.com",
-}
 
 
 @server.list_tools()
@@ -106,17 +98,16 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "url": {
+                    "id": {
                         "type": "string",
-                        "description": "HTTPS URL on binance.com / binance API to retrieve.",
+                        "description": "Identifier returned by the search tool (e.g. BTCUSDT).",
                     },
-                    "method": {
-                        "type": "string",
-                        "enum": ["GET"],
-                        "description": "HTTP method (currently only GET supported).",
+                    "includeMetadata": {
+                        "type": "boolean",
+                        "description": "Whether to include raw exchangeInfo metadata (default true).",
                     },
                 },
-                "required": ["url"],
+                "required": ["id"],
                 "additionalProperties": False,
             },
         ),
@@ -287,39 +278,34 @@ async def _handle_get_binance_klines(payload: Dict[str, Any]) -> List[TextConten
 
 
 async def _handle_fetch(payload: Dict[str, Any]) -> List[TextContent]:
-    url = payload.get("url")
-    if not isinstance(url, str) or not url.strip():
-        raise ValueError("'url' 必须是非空字符串")
+    identifier = payload.get("id")
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise ValueError("'id' 必须是非空字符串")
 
-    parsed = urlparse(url.strip())
-    if parsed.scheme not in {"https", "http"}:
-        raise ValueError("仅支持 http 或 https 协议")
-    if not parsed.netloc:
-        raise ValueError("URL 缺少主机名")
-
-    hostname = parsed.netloc.split(":")[0].lower()
-    if hostname not in ALLOWED_FETCH_HOSTS:
-        raise ValueError("请求的域名不在允许列表中")
-
-    method = str(payload.get("method", "GET")).upper()
-    if method != "GET":
-        raise ValueError("当前仅支持 GET 请求")
+    include_metadata = payload.get("includeMetadata", True)
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(url)
+        response = await client.get(
+            f"{BINANCE_FAPI}/fapi/v1/exchangeInfo",
+            params={"symbol": identifier.strip().upper()},
+        )
+        response.raise_for_status()
+        data = response.json()
 
-    headers = {key: value for key, value in response.headers.items()}
-    body_text = response.text
-    if len(body_text) > FETCH_BODY_LIMIT:
-        body_text = body_text[:FETCH_BODY_LIMIT] + "..."
+    symbols = data.get("symbols")
+    if isinstance(symbols, list) and symbols:
+        detail = symbols[0]
+    else:
+        detail = None
 
-    payload_out = {
-        "status": response.status_code,
-        "headers": headers,
-        "body": body_text,
-        "contentType": response.headers.get("Content-Type"),
-        "url": str(response.request.url),
+    fetch_url = f"https://www.binance.com/en/futures/{identifier.strip().upper()}"
+
+    payload_out: Dict[str, Any] = {
+        "id": identifier.strip(),
+        "url": fetch_url,
     }
+    if include_metadata and detail is not None:
+        payload_out["metadata"] = detail
 
     text = json.dumps(payload_out, ensure_ascii=False)
     return [TextContent(type="text", text=text)]
@@ -344,6 +330,9 @@ async def _search_binance_symbols(query: str, limit: int) -> List[Dict[str, Any]
         symbol = entry.get("symbol", "")
         pair = entry.get("pair", "")
         contract = entry.get("contractType", "")
+
+        if not (symbol or pair):
+            continue
 
         field_values = [symbol, pair, contract, entry.get("deliveryDate", "")]
         matches = [val for val in field_values if isinstance(val, str) and val]
@@ -370,6 +359,7 @@ async def _search_binance_symbols(query: str, limit: int) -> List[Dict[str, Any]
         snippet = " | ".join(part for part in snippet_parts if part)
 
         result = {
+            "id": symbol or pair,
             "title": f"{title} (USDT-M futures)",
             "url": f"https://www.binance.com/en/futures/{url_symbol}" if url_symbol else None,
             "snippet": snippet or "Binance futures contract metadata",
