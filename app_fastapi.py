@@ -300,6 +300,10 @@ def _build_transport_security_settings() -> TransportSecuritySettings:
         "RENDER_EXTERNAL_HOSTNAME",
         "RAILWAY_PUBLIC_DOMAIN",
         "RAILWAY_STATIC_URL",
+        "RAILWAY_URL",
+        "RAILWAY_HTTP_URL",
+        "RAILWAY_PRIVATE_DOMAIN",
+        "RAILWAY_APP_DOMAIN",
     )
     for key in env_host_keys:
         host = _normalize_host(os.getenv(key, ""))
