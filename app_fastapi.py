@@ -284,19 +284,28 @@ async def _handle_fetch(payload: Dict[str, Any]) -> List[TextContent]:
 
     include_metadata = payload.get("includeMetadata", True)
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(
-            f"{BINANCE_FAPI}/fapi/v1/exchangeInfo",
-            params={"symbol": identifier.strip().upper()},
-        )
-        response.raise_for_status()
-        data = response.json()
+    async with httpx.AsyncClient(timeout=15.0, headers={"User-Agent": "railway-mcp-binance/1.0"}) as client:
+        try:
+            response = await client.get(
+                f"{BINANCE_FAPI}/fapi/v1/exchangeInfo",
+                params={"symbol": identifier.strip().upper()},
+            )
+            response.raise_for_status()
+            data = response.json()
+        except httpx.HTTPStatusError as exc:
+            data = None
+            detail = None
+            payload_out = {
+                "id": identifier.strip(),
+                "url": f"https://www.binance.com/en/futures/{identifier.strip().upper()}",
+                "status": exc.response.status_code,
+                "body": exc.response.text[:FETCH_BODY_LIMIT],
+            }
+            text = json.dumps(payload_out, ensure_ascii=False)
+            return [TextContent(type="text", text=text)]
 
-    symbols = data.get("symbols")
-    if isinstance(symbols, list) and symbols:
-        detail = symbols[0]
-    else:
-        detail = None
+    symbols = data.get("symbols") if isinstance(data, dict) else None
+    detail = symbols[0] if isinstance(symbols, list) and symbols else None
 
     fetch_url = f"https://www.binance.com/en/futures/{identifier.strip().upper()}"
 
