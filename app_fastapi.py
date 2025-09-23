@@ -58,7 +58,16 @@ KLINE_KEYS = [
 ]
 
 SEARCH_TOOL_NAMES = {"search", "search_action"}
+FETCH_TOOL_NAMES = {"fetch", "fetch_action"}
 DEFAULT_SEARCH_LIMIT = 5
+FETCH_BODY_LIMIT = 20000
+ALLOWED_FETCH_HOSTS = {
+    "binance.com",
+    "www.binance.com",
+    "api.binance.com",
+    "fapi.binance.com",
+    "data.binance.com",
+}
 
 
 @server.list_tools()
@@ -88,6 +97,26 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["query"],
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="fetch",
+            description="Fetch public Binance endpoints to retrieve detailed contract data.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "HTTPS URL on binance.com / binance API to retrieve.",
+                    },
+                    "method": {
+                        "type": "string",
+                        "enum": ["GET"],
+                        "description": "HTTP method (currently only GET supported).",
+                    },
+                },
+                "required": ["url"],
                 "additionalProperties": False,
             },
         ),
@@ -149,6 +178,8 @@ async def call_tool(name: str, arguments: dict[str, Any] | None = None):
 
     if name in SEARCH_TOOL_NAMES:
         return await _handle_search(payload)
+    if name in FETCH_TOOL_NAMES:
+        return await _handle_fetch(payload)
     if name == "say_hello":
         return _handle_say_hello(payload)
     if name == "get_binance_klines":
@@ -252,6 +283,45 @@ async def _handle_get_binance_klines(payload: Dict[str, Any]) -> List[TextConten
 
     payload = {"summary": summary, "klines": klines}
     text = json.dumps(payload, ensure_ascii=False)
+    return [TextContent(type="text", text=text)]
+
+
+async def _handle_fetch(payload: Dict[str, Any]) -> List[TextContent]:
+    url = payload.get("url")
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("'url' 必须是非空字符串")
+
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"https", "http"}:
+        raise ValueError("仅支持 http 或 https 协议")
+    if not parsed.netloc:
+        raise ValueError("URL 缺少主机名")
+
+    hostname = parsed.netloc.split(":")[0].lower()
+    if hostname not in ALLOWED_FETCH_HOSTS:
+        raise ValueError("请求的域名不在允许列表中")
+
+    method = str(payload.get("method", "GET")).upper()
+    if method != "GET":
+        raise ValueError("当前仅支持 GET 请求")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.get(url)
+
+    headers = {key: value for key, value in response.headers.items()}
+    body_text = response.text
+    if len(body_text) > FETCH_BODY_LIMIT:
+        body_text = body_text[:FETCH_BODY_LIMIT] + "..."
+
+    payload_out = {
+        "status": response.status_code,
+        "headers": headers,
+        "body": body_text,
+        "contentType": response.headers.get("Content-Type"),
+        "url": str(response.request.url),
+    }
+
+    text = json.dumps(payload_out, ensure_ascii=False)
     return [TextContent(type="text", text=text)]
 
 
