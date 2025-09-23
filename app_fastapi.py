@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 
 import httpx
 from fastapi import FastAPI
+from difflib import SequenceMatcher
 
 from mcp.server import Server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -56,11 +57,40 @@ KLINE_KEYS = [
     "ignore",
 ]
 
+SEARCH_TOOL_NAMES = {"search", "search_action"}
+DEFAULT_SEARCH_LIMIT = 5
+
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """Expose available MCP tools."""
     return [
+        Tool(
+            name="search",
+            description="Search Binance USDT-M futures metadata by symbol or pair.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search keywords, e.g. BTC or perpetual.",
+                    },
+                    "topK": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": "Maximum number of matches to return (default 5).",
+                    },
+                    "timeRange": {
+                        "type": "string",
+                        "enum": ["24h", "7d", "30d", "all"],
+                        "description": "Optional temporal hint; currently informational only.",
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        ),
         Tool(
             name="say_hello",
             description="Return a friendly greeting",
@@ -117,6 +147,8 @@ async def call_tool(name: str, arguments: dict[str, Any] | None = None):
     """Handle tool invocation requests."""
     payload: Dict[str, Any] = arguments or {}
 
+    if name in SEARCH_TOOL_NAMES:
+        return await _handle_search(payload)
     if name == "say_hello":
         return _handle_say_hello(payload)
     if name == "get_binance_klines":
@@ -132,6 +164,43 @@ def _handle_say_hello(payload: Dict[str, Any]) -> List[TextContent]:
         person = "world"
     greeting = f"Hello, {person}!"
     return [TextContent(type="text", text=greeting)]
+
+
+async def _handle_search(payload: Dict[str, Any]) -> List[TextContent]:
+    query = payload.get("query")
+    if not isinstance(query, str) or not query.strip():
+        raise ValueError("'query' 必须是非空字符串")
+
+    top_k = payload.get("topK", DEFAULT_SEARCH_LIMIT)
+    try:
+        limit = int(top_k)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("'topK' 必须是整数") from exc
+    if not 1 <= limit <= 10:
+        raise ValueError("'topK' 取值范围为 1-10")
+
+    time_range = payload.get("timeRange")
+    if time_range is not None and time_range not in {"24h", "7d", "30d", "all"}:
+        raise ValueError("'timeRange' 取值需为 24h/7d/30d/all 之一")
+
+    try:
+        results = await _search_binance_symbols(query.strip(), limit)
+    except httpx.HTTPStatusError as exc:
+        raise ValueError(
+            f"Binance exchangeInfo 返回错误 {exc.response.status_code}: {exc.response.text.strip()}"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise ValueError(f"访问 Binance exchangeInfo 失败: {exc}") from exc
+
+    payload_out: Dict[str, Any] = {
+        "results": results,
+        "query": query.strip(),
+    }
+    if time_range:
+        payload_out["timeRange"] = time_range
+
+    text = json.dumps(payload_out, ensure_ascii=False)
+    return [TextContent(type="text", text=text)]
 
 
 async def _handle_get_binance_klines(payload: Dict[str, Any]) -> List[TextContent]:
@@ -184,6 +253,68 @@ async def _handle_get_binance_klines(payload: Dict[str, Any]) -> List[TextConten
     payload = {"summary": summary, "klines": klines}
     text = json.dumps(payload, ensure_ascii=False)
     return [TextContent(type="text", text=text)]
+
+
+async def _search_binance_symbols(query: str, limit: int) -> List[Dict[str, Any]]:
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(f"{BINANCE_FAPI}/fapi/v1/exchangeInfo")
+        response.raise_for_status()
+        data = response.json()
+
+    symbols = data.get("symbols")
+    if not isinstance(symbols, list):
+        return []
+
+    query_upper = query.upper()
+    scored: list[tuple[float, Dict[str, Any]]] = []
+
+    for entry in symbols:
+        if not isinstance(entry, dict):
+            continue
+        symbol = entry.get("symbol", "")
+        pair = entry.get("pair", "")
+        contract = entry.get("contractType", "")
+
+        field_values = [symbol, pair, contract, entry.get("deliveryDate", "")]
+        matches = [val for val in field_values if isinstance(val, str) and val]
+        if not matches:
+            continue
+
+        score = 0.0
+        for value in matches:
+            value_upper = value.upper()
+            if query_upper in value_upper:
+                score = max(score, 0.6)
+            score = max(score, SequenceMatcher(None, query_upper, value_upper).ratio())
+
+        if score <= 0.2:
+            continue
+
+        title = symbol or pair or "Unknown symbol"
+        url_symbol = symbol or pair
+        snippet_parts = [
+            f"Pair: {pair}" if pair else None,
+            f"Contract: {contract}" if contract else None,
+            f"Status: {entry.get('status', 'UNKNOWN')}",
+        ]
+        snippet = " | ".join(part for part in snippet_parts if part)
+
+        result = {
+            "title": f"{title} (USDT-M futures)",
+            "url": f"https://www.binance.com/en/futures/{url_symbol}" if url_symbol else None,
+            "snippet": snippet or "Binance futures contract metadata",
+            "metadata": {
+                "symbol": symbol,
+                "pair": pair,
+                "contractType": contract,
+                "marginAsset": entry.get("marginAsset"),
+                "quoteAsset": entry.get("quoteAsset"),
+            },
+        }
+        scored.append((score, result))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [item[1] for item in scored[:limit]]
 
 
 def _normalize_optional_int(value: Any, field_name: str) -> int | None:
