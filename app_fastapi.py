@@ -285,7 +285,7 @@ def _build_transport_security_settings() -> TransportSecuritySettings:
 
 manager = StreamableHTTPSessionManager(
     app=server,
-    json_response=False,
+    json_response=True,
     stateless=False,
     security_settings=_build_transport_security_settings(),
 )
